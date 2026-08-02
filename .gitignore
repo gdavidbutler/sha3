@@ -53,3 +53,8 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Local Executables
+sha3256
+sha3512
+kat
