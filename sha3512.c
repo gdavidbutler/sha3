@@ -81,6 +81,7 @@ sha3512mix(
    ,{0x00000000U,0x80000001U}
    ,{0x80000000U,0x80008008U}
   };
+  static const unsigned char m[] = {0, 1, 2, 3, 4, 0, 1, 2, 3}; /* n % 5 */
   sha3512_lt b[25]; /* rho and pi land here, chi reads it back */
   sha3512_lt c[5];  /* column parities */
   sha3512_lt d;
@@ -102,8 +103,8 @@ sha3512mix(
         LXR(c[j], c[j], a[j + 5 * y]);
     }
     for (j = 0; j < 5; ++j) {
-      LRL(t, c[(j + 1) % 5], 1);
-      LXR(d, c[(j + 4) % 5], t);
+      LRL(t, c[m[j + 1]], 1);
+      LXR(d, c[m[j + 4]], t);
       for (y = 0; y < 5; ++y)
         LXR(a[j + 5 * y], a[j + 5 * y], d);
     }
@@ -136,7 +137,7 @@ sha3512mix(
     for (y = 0; y < 5; ++y) /* chi */
       for (j = 0; j < 5; ++j)
         LCH(a[j + 5 * y], b[j + 5 * y]
-           ,b[(j + 1) % 5 + 5 * y], b[(j + 2) % 5 + 5 * y]);
+           ,b[m[j + 1] + 5 * y], b[m[j + 2] + 5 * y]);
     a[0].h ^= k[i][0]; /* iota */
     a[0].l ^= k[i][1];
   }
@@ -284,6 +285,8 @@ sha3512hkdf(
  ,unsigned int sl
 ){
   sha3512_t c;
+  sha3512_t ci;
+  sha3512_t co;
   unsigned char i[SHA3512_RT];
   unsigned char o[SHA3512_RT];
   unsigned char t[SHA3512_SZ];
@@ -308,20 +311,22 @@ sha3512hkdf(
     i[l] = 0x00 ^ 0x36;
     o[l] = 0x00 ^ 0x5c;
   }
+  sha3512init(&ci);
+  sha3512update(&ci, i, sizeof (i));
+  sha3512init(&co);
+  sha3512update(&co, o, sizeof (o));
   for (n = 0, l = 0; l < sl;) {
     unsigned char b;
     unsigned int j;
 
     b = (unsigned char)++n;
-    sha3512init(&c);
-    sha3512update(&c, i, sizeof (i));
+    c = ci;
     if (n > 1)
       sha3512update(&c, t, SHA3512_SZ);
     sha3512update(&c, d, dl);
     sha3512update(&c, &b, 1);
     sha3512final(&c, t2);
-    sha3512init(&c);
-    sha3512update(&c, o, sizeof (o));
+    c = co;
     sha3512update(&c, t2, SHA3512_SZ);
     sha3512final(&c, t);
     for (j = 0; j < SHA3512_SZ && l < sl; ++j, ++l)
@@ -334,6 +339,12 @@ sha3512hkdf(
 
     p = (volatile unsigned char *)&c;
     for (m = 0; m < sizeof (c); ++m)
+      *p++ = 0;
+    p = (volatile unsigned char *)&ci;
+    for (m = 0; m < sizeof (ci); ++m)
+      *p++ = 0;
+    p = (volatile unsigned char *)&co;
+    for (m = 0; m < sizeof (co); ++m)
       *p++ = 0;
     p = (volatile unsigned char *)i;
     for (m = 0; m < sizeof (i); ++m)
