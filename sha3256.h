@@ -27,8 +27,12 @@ unsigned int sha3256tsize(void);
 void sha3256init(sha3256_t *);
 void sha3256update(sha3256_t *, const unsigned char *, unsigned int);
 void sha3256final(sha3256_t *, unsigned char *); /* SHA3256_SZ */
+typedef struct sha3256k sha3256k_t; /* an HMAC keyed: the key's two pads hashed once; its owner wipes it */
+unsigned int sha3256ktsize(void);
+void sha3256kinit(sha3256k_t *, const unsigned char *k, unsigned int kl);
+void sha3256khmac(const sha3256k_t *, const unsigned char *d, unsigned int dl, unsigned char *h); /* SHA3256_SZ */
 void sha3256hmac(const unsigned char *k, unsigned int kl, const unsigned char *d, unsigned int dl, unsigned char *h); /* SHA3256_SZ */
-void sha3256hkdf(const unsigned char *k, unsigned int kl, const unsigned char *d, unsigned int dl, unsigned char *o, unsigned int ol); /* up to 255 * SHA3256_SZ */
+void sha3256hkdf(const unsigned char *k, unsigned int kl, const unsigned char *d, unsigned int dl, unsigned char *o, unsigned int ol); /* up to 255 * SHA3256_SZ; o must not overlap d when ol > SHA3256_SZ */
 void sha3256hex(const unsigned char *, char *); /* SHA3256_SZ, 2 * SHA3256_SZ (not null-terminated) */
 
 #endif /* SHA3256_H */

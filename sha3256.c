@@ -33,6 +33,10 @@ struct sha3256 {
   unsigned int l;               /* current short data */
   unsigned char d[SHA3256_RT];  /* short data */
 };
+struct sha3256k {
+  sha3256_t i;                  /* the inner pad hashed */
+  sha3256_t o;                  /* the outer pad hashed */
+};
 
 /* d = s, d = x ^ y, d = x ^ (~y & z) */
 #define LCP(d,s)     ((d).h = (s).h, (d).l = (s).l)
@@ -141,6 +145,22 @@ sha3256mix(
     a[0].h ^= k[i][0]; /* iota */
     a[0].l ^= k[i][1];
   }
+  /* wipe the lanes, which give the block back through the permutation,
+   * a secret's when a key is hashed; volatile defeats dead-store
+   * elimination */
+  {
+    volatile sha3256_lt *p;
+    unsigned int n;
+
+    for (p = b, n = 0; n < sizeof (b) / sizeof (b[0]); ++n, ++p)
+      p->h = p->l = 0;
+    for (p = c, n = 0; n < sizeof (c) / sizeof (c[0]); ++n, ++p)
+      p->h = p->l = 0;
+    p = &d;
+    p->h = p->l = 0;
+    p = &t;
+    p->h = p->l = 0;
+  }
 }
 
 unsigned int
@@ -222,80 +242,25 @@ sha3256final(
   }
 }
 
-void
-sha3256hmac(
-  const unsigned char *k
- ,unsigned int kl
- ,const unsigned char *d
- ,unsigned int dl
- ,unsigned char *h
+unsigned int
+sha3256ktsize(
+  void
 ){
-  sha3256_t c;
-  unsigned char i[SHA3256_RT];
-  unsigned char o[SHA3256_RT];
-  unsigned int l;
-
-  if (kl > SHA3256_RT) {
-    sha3256init(&c);
-    sha3256update(&c, k, kl);
-    sha3256final(&c, h);
-    k = h;
-    kl = SHA3256_SZ;
-  }
-  for (l = 0; l < kl; ++l) {
-    i[l] = *(k + l) ^ 0x36;
-    o[l] = *(k + l) ^ 0x5c;
-  }
-  for (; l < SHA3256_RT; ++l) {
-    i[l] = 0x00 ^ 0x36;
-    o[l] = 0x00 ^ 0x5c;
-  }
-  sha3256init(&c);
-  sha3256update(&c, i, sizeof (i));
-  sha3256update(&c, d, dl);
-  sha3256final(&c, h);
-  sha3256init(&c);
-  sha3256update(&c, o, sizeof (o));
-  sha3256update(&c, h, SHA3256_SZ);
-  sha3256final(&c, h);
-  /* wipe stack residue; volatile defeats dead-store elimination */
-  {
-    volatile unsigned char *p;
-    unsigned int n;
-
-    p = (volatile unsigned char *)&c;
-    for (n = 0; n < sizeof (c); ++n)
-      *p++ = 0;
-    p = (volatile unsigned char *)i;
-    for (n = 0; n < sizeof (i); ++n)
-      *p++ = 0;
-    p = (volatile unsigned char *)o;
-    for (n = 0; n < sizeof (o); ++n)
-      *p++ = 0;
-  }
+  return (sizeof (sha3256k_t));
 }
 
 void
-sha3256hkdf(
-  const unsigned char *k
+sha3256kinit(
+  sha3256k_t *x
+ ,const unsigned char *k
  ,unsigned int kl
- ,const unsigned char *d
- ,unsigned int dl
- ,unsigned char *s
- ,unsigned int sl
 ){
   sha3256_t c;
-  sha3256_t ci;
-  sha3256_t co;
   unsigned char i[SHA3256_RT];
   unsigned char o[SHA3256_RT];
   unsigned char t[SHA3256_SZ];
-  unsigned char t2[SHA3256_SZ];
   unsigned int l;
-  unsigned int n;
 
-  if (sl > 255 * SHA3256_SZ)
-    sl = 255 * SHA3256_SZ;
   if (kl > SHA3256_RT) {
     sha3256init(&c);
     sha3256update(&c, k, kl);
@@ -311,22 +276,110 @@ sha3256hkdf(
     i[l] = 0x00 ^ 0x36;
     o[l] = 0x00 ^ 0x5c;
   }
-  sha3256init(&ci);
-  sha3256update(&ci, i, sizeof (i));
-  sha3256init(&co);
-  sha3256update(&co, o, sizeof (o));
+  sha3256init(&x->i);
+  sha3256update(&x->i, i, sizeof (i));
+  sha3256init(&x->o);
+  sha3256update(&x->o, o, sizeof (o));
+  /* wipe stack residue; volatile defeats dead-store elimination */
+  {
+    volatile unsigned char *p;
+    unsigned int n;
+
+    p = (volatile unsigned char *)&c;
+    for (n = 0; n < sizeof (c); ++n)
+      *p++ = 0;
+    p = (volatile unsigned char *)i;
+    for (n = 0; n < sizeof (i); ++n)
+      *p++ = 0;
+    p = (volatile unsigned char *)o;
+    for (n = 0; n < sizeof (o); ++n)
+      *p++ = 0;
+    p = (volatile unsigned char *)t;
+    for (n = 0; n < sizeof (t); ++n)
+      *p++ = 0;
+  }
+}
+
+void
+sha3256khmac(
+  const sha3256k_t *x
+ ,const unsigned char *d
+ ,unsigned int dl
+ ,unsigned char *h
+){
+  sha3256_t c;
+
+  c = x->i;
+  sha3256update(&c, d, dl);
+  sha3256final(&c, h);
+  c = x->o;
+  sha3256update(&c, h, SHA3256_SZ);
+  sha3256final(&c, h);
+  /* wipe stack residue; volatile defeats dead-store elimination */
+  {
+    volatile unsigned char *p;
+    unsigned int n;
+
+    p = (volatile unsigned char *)&c;
+    for (n = 0; n < sizeof (c); ++n)
+      *p++ = 0;
+  }
+}
+
+void
+sha3256hmac(
+  const unsigned char *k
+ ,unsigned int kl
+ ,const unsigned char *d
+ ,unsigned int dl
+ ,unsigned char *h
+){
+  sha3256k_t x;
+
+  sha3256kinit(&x, k, kl);
+  sha3256khmac(&x, d, dl, h);
+  /* wipe stack residue; volatile defeats dead-store elimination */
+  {
+    volatile unsigned char *p;
+    unsigned int n;
+
+    p = (volatile unsigned char *)&x;
+    for (n = 0; n < sizeof (x); ++n)
+      *p++ = 0;
+  }
+}
+
+void
+sha3256hkdf(
+  const unsigned char *k
+ ,unsigned int kl
+ ,const unsigned char *d
+ ,unsigned int dl
+ ,unsigned char *s
+ ,unsigned int sl
+){
+  sha3256_t c;
+  sha3256k_t x;
+  unsigned char t[SHA3256_SZ];
+  unsigned char t2[SHA3256_SZ];
+  unsigned int l;
+  unsigned int n;
+
+  if (sl > 255 * SHA3256_SZ)
+    sl = 255 * SHA3256_SZ;
+  sha3256kinit(&x, k, kl);
   for (n = 0, l = 0; l < sl;) {
     unsigned char b;
     unsigned int j;
 
     b = (unsigned char)++n;
-    c = ci;
+    c = x.i;
     if (n > 1)
       sha3256update(&c, t, SHA3256_SZ);
     sha3256update(&c, d, dl);
     sha3256update(&c, &b, 1);
     sha3256final(&c, t2);
-    c = co;
+    c = x.o;
     sha3256update(&c, t2, SHA3256_SZ);
     sha3256final(&c, t);
     for (j = 0; j < SHA3256_SZ && l < sl; ++j, ++l)
@@ -340,17 +393,8 @@ sha3256hkdf(
     p = (volatile unsigned char *)&c;
     for (m = 0; m < sizeof (c); ++m)
       *p++ = 0;
-    p = (volatile unsigned char *)&ci;
-    for (m = 0; m < sizeof (ci); ++m)
-      *p++ = 0;
-    p = (volatile unsigned char *)&co;
-    for (m = 0; m < sizeof (co); ++m)
-      *p++ = 0;
-    p = (volatile unsigned char *)i;
-    for (m = 0; m < sizeof (i); ++m)
-      *p++ = 0;
-    p = (volatile unsigned char *)o;
-    for (m = 0; m < sizeof (o); ++m)
+    p = (volatile unsigned char *)&x;
+    for (m = 0; m < sizeof (x); ++m)
       *p++ = 0;
     p = (volatile unsigned char *)t;
     for (m = 0; m < sizeof (t); ++m)

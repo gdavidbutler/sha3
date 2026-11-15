@@ -27,8 +27,12 @@ unsigned int sha3512tsize(void);
 void sha3512init(sha3512_t *);
 void sha3512update(sha3512_t *, const unsigned char *, unsigned int);
 void sha3512final(sha3512_t *, unsigned char *); /* SHA3512_SZ */
+typedef struct sha3512k sha3512k_t; /* an HMAC keyed: the key's two pads hashed once; its owner wipes it */
+unsigned int sha3512ktsize(void);
+void sha3512kinit(sha3512k_t *, const unsigned char *k, unsigned int kl);
+void sha3512khmac(const sha3512k_t *, const unsigned char *d, unsigned int dl, unsigned char *h); /* SHA3512_SZ */
 void sha3512hmac(const unsigned char *k, unsigned int kl, const unsigned char *d, unsigned int dl, unsigned char *h); /* SHA3512_SZ */
-void sha3512hkdf(const unsigned char *k, unsigned int kl, const unsigned char *d, unsigned int dl, unsigned char *o, unsigned int ol); /* up to 255 * SHA3512_SZ */
+void sha3512hkdf(const unsigned char *k, unsigned int kl, const unsigned char *d, unsigned int dl, unsigned char *o, unsigned int ol); /* up to 255 * SHA3512_SZ; o must not overlap d when ol > SHA3512_SZ */
 void sha3512hex(const unsigned char *, char *); /* SHA3512_SZ, 2 * SHA3512_SZ (not null-terminated) */
 
 #endif /* SHA3512_H */
