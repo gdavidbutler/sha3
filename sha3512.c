@@ -30,13 +30,20 @@ typedef struct {
 } sha3512_lt;
 struct sha3512 {
   sha3512_lt a[25];             /* sponge state, 5 by 5 lanes of 64 bits */
-  unsigned int l;               /* current short data */
-  unsigned char d[SHA3512_RT];  /* short data */
+  sha3512_bt l;                 /* current short data */
+  union {
+    unsigned char d[SHA3512_RT];                    /* short data */
+    sha3512_bt w[SHA3512_RT / sizeof (sha3512_bt)]; /* d as words, to wipe */
+  } u;
 };
 struct sha3512k {
   sha3512_t i;                  /* the inner pad hashed */
   sha3512_t o;                  /* the outer pad hashed */
 };
+/* the wipes name every member: they reach every byte only without padding */
+typedef int sha3512_layout_check[sizeof (sha3512_t)
+ == (2 * 25 + 1) * sizeof (sha3512_bt) + SHA3512_RT /* a, l; u */
+ && sizeof (sha3512k_t) == 2 * sizeof (sha3512_t) ? 1 : -1];
 
 /* d = s, d = x ^ y, d = x ^ (~y & z) */
 #define LCP(d,s)     ((d).h = (s).h, (d).l = (s).l)
@@ -192,10 +199,10 @@ sha3512update(
   if (v->l) {
     unsigned int i;
 
-    for (i = v->l, s = v->d + i; l && i < SHA3512_RT; --l, ++i, ++s, ++d)
+    for (i = v->l, s = v->u.d + i; l && i < SHA3512_RT; --l, ++i, ++s, ++d)
       *s = *d;
     if (i == SHA3512_RT) {
-      sha3512mix(v->a, v->d);
+      sha3512mix(v->a, v->u.d);
       v->l = 0;
     } else {
       v->l = i;
@@ -206,7 +213,7 @@ sha3512update(
     sha3512mix(v->a, d);
   if (l) {
     v->l = l;
-    for (s = v->d; l; --l, ++s, ++d)
+    for (s = v->u.d; l; --l, ++s, ++d)
       *s = *d;
   }
 }
@@ -225,11 +232,11 @@ sha3512final(
    * squeeze suffices because SHA3512_SZ is inside the rate.
    */
   i = v->l;
-  s = v->d + i;
+  s = v->u.d + i;
   for (*s++ = 0x06, ++i; i < SHA3512_RT; ++i, ++s)
     *s = 0x00;
-  *(v->d + SHA3512_RT - 1) |= 0x80;
-  sha3512mix(v->a, v->d);
+  *(v->u.d + SHA3512_RT - 1) |= 0x80;
+  sha3512mix(v->a, v->u.d);
   for (i = 0; i < SHA3512_SZ / 8; ++i) {
     *h++ = (unsigned char)(v->a[i].l >> (0 * 8));
     *h++ = (unsigned char)(v->a[i].l >> (1 * 8));
@@ -239,6 +246,24 @@ sha3512final(
     *h++ = (unsigned char)(v->a[i].h >> (1 * 8));
     *h++ = (unsigned char)(v->a[i].h >> (2 * 8));
     *h++ = (unsigned char)(v->a[i].h >> (3 * 8));
+  }
+  /* leave nothing of the message in the context; volatile defeats
+   * dead-store elimination, in words since volatile bytes cannot
+   * be merged */
+  {
+    volatile sha3512_bt *p;
+    unsigned int n;
+
+    for (n = 0; n < sizeof (v->a) / sizeof (v->a[0]); ++n) {
+      p = &v->a[n].h;
+      *p = 0;
+      p = &v->a[n].l;
+      *p = 0;
+    }
+    p = &v->l;
+    *p = 0;
+    for (p = v->u.w, n = 0; n < sizeof (v->u.w) / sizeof (v->u.w[0]); ++n)
+      *p++ = 0;
   }
 }
 
@@ -285,9 +310,6 @@ sha3512kinit(
     volatile unsigned char *p;
     unsigned int n;
 
-    p = (volatile unsigned char *)&c;
-    for (n = 0; n < sizeof (c); ++n)
-      *p++ = 0;
     p = (volatile unsigned char *)i;
     for (n = 0; n < sizeof (i); ++n)
       *p++ = 0;
@@ -315,15 +337,6 @@ sha3512khmac(
   c = x->o;
   sha3512update(&c, h, SHA3512_SZ);
   sha3512final(&c, h);
-  /* wipe stack residue; volatile defeats dead-store elimination */
-  {
-    volatile unsigned char *p;
-    unsigned int n;
-
-    p = (volatile unsigned char *)&c;
-    for (n = 0; n < sizeof (c); ++n)
-      *p++ = 0;
-  }
 }
 
 void
@@ -338,14 +351,26 @@ sha3512hmac(
 
   sha3512kinit(&x, k, kl);
   sha3512khmac(&x, d, dl, h);
-  /* wipe stack residue; volatile defeats dead-store elimination */
+  /* wipe stack residue; volatile defeats dead-store elimination, in
+   * words since volatile bytes cannot be merged */
   {
-    volatile unsigned char *p;
+    sha3512_t *q;
+    volatile sha3512_bt *p;
+    unsigned int i;
     unsigned int n;
 
-    p = (volatile unsigned char *)&x;
-    for (n = 0; n < sizeof (x); ++n)
-      *p++ = 0;
+    for (q = &x.i, i = 0; i < 2; ++i, q = &x.o) {
+      for (n = 0; n < sizeof (q->a) / sizeof (q->a[0]); ++n) {
+        p = &q->a[n].h;
+        *p = 0;
+        p = &q->a[n].l;
+        *p = 0;
+      }
+      p = &q->l;
+      *p = 0;
+      for (p = q->u.w, n = 0; n < sizeof (q->u.w) / sizeof (q->u.w[0]); ++n)
+        *p++ = 0;
+    }
   }
 }
 
@@ -385,17 +410,27 @@ sha3512hkdf(
     for (j = 0; j < SHA3512_SZ && l < sl; ++j, ++l)
       s[l] = t[j];
   }
-  /* wipe stack residue once; volatile defeats dead-store elimination */
+  /* wipe stack residue once; volatile defeats dead-store elimination,
+   * the keyed pair in words since volatile bytes cannot be merged */
   {
+    sha3512_t *q;
+    volatile sha3512_bt *w;
     volatile unsigned char *p;
+    unsigned int i;
     unsigned int m;
 
-    p = (volatile unsigned char *)&c;
-    for (m = 0; m < sizeof (c); ++m)
-      *p++ = 0;
-    p = (volatile unsigned char *)&x;
-    for (m = 0; m < sizeof (x); ++m)
-      *p++ = 0;
+    for (q = &x.i, i = 0; i < 2; ++i, q = &x.o) {
+      for (m = 0; m < sizeof (q->a) / sizeof (q->a[0]); ++m) {
+        w = &q->a[m].h;
+        *w = 0;
+        w = &q->a[m].l;
+        *w = 0;
+      }
+      w = &q->l;
+      *w = 0;
+      for (w = q->u.w, m = 0; m < sizeof (q->u.w) / sizeof (q->u.w[0]); ++m)
+        *w++ = 0;
+    }
     p = (volatile unsigned char *)t;
     for (m = 0; m < sizeof (t); ++m)
       *p++ = 0;

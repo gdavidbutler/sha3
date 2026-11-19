@@ -26,7 +26,7 @@ typedef struct sha3256 sha3256_t;
 unsigned int sha3256tsize(void);
 void sha3256init(sha3256_t *);
 void sha3256update(sha3256_t *, const unsigned char *, unsigned int);
-void sha3256final(sha3256_t *, unsigned char *); /* SHA3256_SZ */
+void sha3256final(sha3256_t *, unsigned char *); /* SHA3256_SZ; then zeroes the context, which init may take again */
 typedef struct sha3256k sha3256k_t; /* an HMAC keyed: the key's two pads hashed once; its owner wipes it */
 unsigned int sha3256ktsize(void);
 void sha3256kinit(sha3256k_t *, const unsigned char *k, unsigned int kl);

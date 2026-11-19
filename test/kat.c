@@ -128,6 +128,21 @@ check(
   return (1);
 }
 
+/* the index of the first byte not zero, n when all are */
+static unsigned int
+unzeroed(
+  const void *c
+ ,unsigned int n
+){
+  const unsigned char *p;
+  unsigned int q;
+
+  for (p = c, q = 0; q < n; ++q, ++p)
+    if (*p)
+      break;
+  return (q);
+}
+
 int
 main(
   void
@@ -155,6 +170,7 @@ main(
   unsigned int q;
   unsigned int off;
   unsigned int n;
+  unsigned int z;
   int fail;
 
   for (q = 0; q < sizeof (Buf); ++q)
@@ -178,32 +194,52 @@ main(
 
   /* FIPS 202 spec messages */
   for (q = 0; q < sizeof (Svec) / sizeof (Svec[0]); ++q) {
+    memset(c256, 0xa5, sha3256tsize());
     sha3256init(c256);
     sha3256update(c256, (const unsigned char *)Svec[q].in, Svec[q].inlen);
     sha3256final(c256, h256);
     hexof(h256, SHA3256_SZ, b256);
     fail += check("sha3256 spec", b256, Svec[q].h256);
+    if ((z = unzeroed(c256, sha3256tsize())) < sha3256tsize()) {
+      fprintf(stderr, "FAIL sha3256final: context byte %u not zero, %u bytes hashed\n", z, Svec[q].inlen);
+      ++fail;
+    }
 
+    memset(c512, 0xa5, sha3512tsize());
     sha3512init(c512);
     sha3512update(c512, (const unsigned char *)Svec[q].in, Svec[q].inlen);
     sha3512final(c512, h512);
     hexof(h512, SHA3512_SZ, b512);
     fail += check("sha3512 spec", b512, Svec[q].h512);
+    if ((z = unzeroed(c512, sha3512tsize())) < sha3512tsize()) {
+      fprintf(stderr, "FAIL sha3512final: context byte %u not zero, %u bytes hashed\n", z, Svec[q].inlen);
+      ++fail;
+    }
   }
 
   /* rate boundaries */
   for (q = 0; q < sizeof (Bvec) / sizeof (Bvec[0]); ++q) {
+    memset(c256, 0xa5, sha3256tsize());
     sha3256init(c256);
     sha3256update(c256, Buf, Bvec[q].inlen);
     sha3256final(c256, h256);
     hexof(h256, SHA3256_SZ, b256);
     fail += check("sha3256 rate", b256, Bvec[q].h256);
+    if ((z = unzeroed(c256, sha3256tsize())) < sha3256tsize()) {
+      fprintf(stderr, "FAIL sha3256final: context byte %u not zero, %u bytes hashed\n", z, Bvec[q].inlen);
+      ++fail;
+    }
 
+    memset(c512, 0xa5, sha3512tsize());
     sha3512init(c512);
     sha3512update(c512, Buf, Bvec[q].inlen);
     sha3512final(c512, h512);
     hexof(h512, SHA3512_SZ, b512);
     fail += check("sha3512 rate", b512, Bvec[q].h512);
+    if ((z = unzeroed(c512, sha3512tsize())) < sha3512tsize()) {
+      fprintf(stderr, "FAIL sha3512final: context byte %u not zero, %u bytes hashed\n", z, Bvec[q].inlen);
+      ++fail;
+    }
   }
 
   /* million-a */
@@ -252,6 +288,35 @@ main(
     hexof(h512, SHA3512_SZ, b512);
     fail += check("sha3256 stream", b256, ref256);
     fail += check("sha3512 stream", b512, ref512);
+  }
+
+  /* final leaves nothing of what it hashed in the context: poisoned
+   * before init, every byte zero after final, at every length through
+   * two of the wider rate and a byte, so every final block length of
+   * both rates is met */
+  {
+    static unsigned char Db[2 * 136 + 1];
+
+    for (q = 0; q < sizeof (Db); ++q)
+      Db[q] = q * 11 + 1;
+    for (q = 0; q <= sizeof (Db); ++q) {
+      memset(c256, 0xa5, sha3256tsize());
+      sha3256init(c256);
+      sha3256update(c256, Db, q);
+      sha3256final(c256, h256);
+      if ((z = unzeroed(c256, sha3256tsize())) < sha3256tsize()) {
+        fprintf(stderr, "FAIL sha3256final: context byte %u not zero, %u bytes hashed\n", z, q);
+        ++fail;
+      }
+      memset(c512, 0xa5, sha3512tsize());
+      sha3512init(c512);
+      sha3512update(c512, Db, q);
+      sha3512final(c512, h512);
+      if ((z = unzeroed(c512, sha3512tsize())) < sha3512tsize()) {
+        fprintf(stderr, "FAIL sha3512final: context byte %u not zero, %u bytes hashed\n", z, q);
+        ++fail;
+      }
+    }
   }
 
   /* HMAC: block is the rate, 136 and 72; T6 exercises the long-key path */

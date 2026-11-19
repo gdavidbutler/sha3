@@ -26,7 +26,7 @@ typedef struct sha3512 sha3512_t;
 unsigned int sha3512tsize(void);
 void sha3512init(sha3512_t *);
 void sha3512update(sha3512_t *, const unsigned char *, unsigned int);
-void sha3512final(sha3512_t *, unsigned char *); /* SHA3512_SZ */
+void sha3512final(sha3512_t *, unsigned char *); /* SHA3512_SZ; then zeroes the context, which init may take again */
 typedef struct sha3512k sha3512k_t; /* an HMAC keyed: the key's two pads hashed once; its owner wipes it */
 unsigned int sha3512ktsize(void);
 void sha3512kinit(sha3512k_t *, const unsigned char *k, unsigned int kl);

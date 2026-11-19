@@ -30,13 +30,20 @@ typedef struct {
 } sha3256_lt;
 struct sha3256 {
   sha3256_lt a[25];             /* sponge state, 5 by 5 lanes of 64 bits */
-  unsigned int l;               /* current short data */
-  unsigned char d[SHA3256_RT];  /* short data */
+  sha3256_bt l;                 /* current short data */
+  union {
+    unsigned char d[SHA3256_RT];                    /* short data */
+    sha3256_bt w[SHA3256_RT / sizeof (sha3256_bt)]; /* d as words, to wipe */
+  } u;
 };
 struct sha3256k {
   sha3256_t i;                  /* the inner pad hashed */
   sha3256_t o;                  /* the outer pad hashed */
 };
+/* the wipes name every member: they reach every byte only without padding */
+typedef int sha3256_layout_check[sizeof (sha3256_t)
+ == (2 * 25 + 1) * sizeof (sha3256_bt) + SHA3256_RT /* a, l; u */
+ && sizeof (sha3256k_t) == 2 * sizeof (sha3256_t) ? 1 : -1];
 
 /* d = s, d = x ^ y, d = x ^ (~y & z) */
 #define LCP(d,s)     ((d).h = (s).h, (d).l = (s).l)
@@ -192,10 +199,10 @@ sha3256update(
   if (v->l) {
     unsigned int i;
 
-    for (i = v->l, s = v->d + i; l && i < SHA3256_RT; --l, ++i, ++s, ++d)
+    for (i = v->l, s = v->u.d + i; l && i < SHA3256_RT; --l, ++i, ++s, ++d)
       *s = *d;
     if (i == SHA3256_RT) {
-      sha3256mix(v->a, v->d);
+      sha3256mix(v->a, v->u.d);
       v->l = 0;
     } else {
       v->l = i;
@@ -206,7 +213,7 @@ sha3256update(
     sha3256mix(v->a, d);
   if (l) {
     v->l = l;
-    for (s = v->d; l; --l, ++s, ++d)
+    for (s = v->u.d; l; --l, ++s, ++d)
       *s = *d;
   }
 }
@@ -225,11 +232,11 @@ sha3256final(
    * squeeze suffices because SHA3256_SZ is inside the rate.
    */
   i = v->l;
-  s = v->d + i;
+  s = v->u.d + i;
   for (*s++ = 0x06, ++i; i < SHA3256_RT; ++i, ++s)
     *s = 0x00;
-  *(v->d + SHA3256_RT - 1) |= 0x80;
-  sha3256mix(v->a, v->d);
+  *(v->u.d + SHA3256_RT - 1) |= 0x80;
+  sha3256mix(v->a, v->u.d);
   for (i = 0; i < SHA3256_SZ / 8; ++i) {
     *h++ = (unsigned char)(v->a[i].l >> (0 * 8));
     *h++ = (unsigned char)(v->a[i].l >> (1 * 8));
@@ -239,6 +246,24 @@ sha3256final(
     *h++ = (unsigned char)(v->a[i].h >> (1 * 8));
     *h++ = (unsigned char)(v->a[i].h >> (2 * 8));
     *h++ = (unsigned char)(v->a[i].h >> (3 * 8));
+  }
+  /* leave nothing of the message in the context; volatile defeats
+   * dead-store elimination, in words since volatile bytes cannot
+   * be merged */
+  {
+    volatile sha3256_bt *p;
+    unsigned int n;
+
+    for (n = 0; n < sizeof (v->a) / sizeof (v->a[0]); ++n) {
+      p = &v->a[n].h;
+      *p = 0;
+      p = &v->a[n].l;
+      *p = 0;
+    }
+    p = &v->l;
+    *p = 0;
+    for (p = v->u.w, n = 0; n < sizeof (v->u.w) / sizeof (v->u.w[0]); ++n)
+      *p++ = 0;
   }
 }
 
@@ -285,9 +310,6 @@ sha3256kinit(
     volatile unsigned char *p;
     unsigned int n;
 
-    p = (volatile unsigned char *)&c;
-    for (n = 0; n < sizeof (c); ++n)
-      *p++ = 0;
     p = (volatile unsigned char *)i;
     for (n = 0; n < sizeof (i); ++n)
       *p++ = 0;
@@ -315,15 +337,6 @@ sha3256khmac(
   c = x->o;
   sha3256update(&c, h, SHA3256_SZ);
   sha3256final(&c, h);
-  /* wipe stack residue; volatile defeats dead-store elimination */
-  {
-    volatile unsigned char *p;
-    unsigned int n;
-
-    p = (volatile unsigned char *)&c;
-    for (n = 0; n < sizeof (c); ++n)
-      *p++ = 0;
-  }
 }
 
 void
@@ -338,14 +351,26 @@ sha3256hmac(
 
   sha3256kinit(&x, k, kl);
   sha3256khmac(&x, d, dl, h);
-  /* wipe stack residue; volatile defeats dead-store elimination */
+  /* wipe stack residue; volatile defeats dead-store elimination, in
+   * words since volatile bytes cannot be merged */
   {
-    volatile unsigned char *p;
+    sha3256_t *q;
+    volatile sha3256_bt *p;
+    unsigned int i;
     unsigned int n;
 
-    p = (volatile unsigned char *)&x;
-    for (n = 0; n < sizeof (x); ++n)
-      *p++ = 0;
+    for (q = &x.i, i = 0; i < 2; ++i, q = &x.o) {
+      for (n = 0; n < sizeof (q->a) / sizeof (q->a[0]); ++n) {
+        p = &q->a[n].h;
+        *p = 0;
+        p = &q->a[n].l;
+        *p = 0;
+      }
+      p = &q->l;
+      *p = 0;
+      for (p = q->u.w, n = 0; n < sizeof (q->u.w) / sizeof (q->u.w[0]); ++n)
+        *p++ = 0;
+    }
   }
 }
 
@@ -385,17 +410,27 @@ sha3256hkdf(
     for (j = 0; j < SHA3256_SZ && l < sl; ++j, ++l)
       s[l] = t[j];
   }
-  /* wipe stack residue once; volatile defeats dead-store elimination */
+  /* wipe stack residue once; volatile defeats dead-store elimination,
+   * the keyed pair in words since volatile bytes cannot be merged */
   {
+    sha3256_t *q;
+    volatile sha3256_bt *w;
     volatile unsigned char *p;
+    unsigned int i;
     unsigned int m;
 
-    p = (volatile unsigned char *)&c;
-    for (m = 0; m < sizeof (c); ++m)
-      *p++ = 0;
-    p = (volatile unsigned char *)&x;
-    for (m = 0; m < sizeof (x); ++m)
-      *p++ = 0;
+    for (q = &x.i, i = 0; i < 2; ++i, q = &x.o) {
+      for (m = 0; m < sizeof (q->a) / sizeof (q->a[0]); ++m) {
+        w = &q->a[m].h;
+        *w = 0;
+        w = &q->a[m].l;
+        *w = 0;
+      }
+      w = &q->l;
+      *w = 0;
+      for (w = q->u.w, m = 0; m < sizeof (q->u.w) / sizeof (q->u.w[0]); ++m)
+        *w++ = 0;
+    }
     p = (volatile unsigned char *)t;
     for (m = 0; m < sizeof (t); ++m)
       *p++ = 0;
